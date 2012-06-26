@@ -1,11 +1,11 @@
 <?php
 /* Copyright 2012 Simon Chopin <chopin.simon@gmail.com>
- * This file is published under the terms of the WTFPLv2,
- * please see COPYING for more details.
- *
- * These functions are provided in the hope that they will help, but
- * with absolutely NO WARRANTY whatsoever.
- */
+* This file is published under the terms of the WTFPLv2,
+* please see COPYING for more details.
+*
+* These functions are provided in the hope that they will help, but
+* with absolutely NO WARRANTY whatsoever.
+*/
 function expandVariable(&$obj, $string, &$replVariables) {
 
     $matches = array();
@@ -59,17 +59,66 @@ function parse_for($string) {
     throw "Ton frangin !";
 }
 
+function forPreRead(&$iterator, &$tplArgs, $ending = NULL, $skip=false) {	
+	$for_preread =array();
+    $ending_markups = array(
+        'if'=>array('endif'),
+        'block'=>array('endblock'),
+        'for'=>array('endfor'),
+    );
+    /* else is here a special case, since its exit markup is already declared, so we consider it a standalone markup WRT the prereading. */
+    $skip_monocommands = array("extends", "else");
+    while ($iterator->valid()) {
+        $line = $iterator->current();
+		
+        if (!array_key_exists($iterator->key(), $for_preread)) {
+            $for_preread[$iterator->key()] = $line;
+        }
+
+        $matches = array();
+        if (preg_match('/^(.*?)\{%(.*?)%\}(.*)$/', $line, $matches)) {
+		    $commands = explode(' ', trim($matches[2]), 2);
+            $iterator->offsetSet($iterator->key(), $matches[3]);
+            if ($ending) {
+                //echo "Looking for an ending.<br />";
+                foreach ($ending as $e)
+                    if ($commands[0] == $e) {
+                        //echo "It is an ending :-)<br />";
+                        return $for_preread;
+                    }
+            }
+            if ($for_preread != NULL) {
+                if (array_search($commands[0], $skip_monocommands) === FALSE) {
+                    //echo "Command : ".$commands[0].' ; ending : ';
+                    //foreach($ending as $e)
+                        //echo $e.', ';
+                    //echo '<br />';
+
+                    $for_preread = forPreRead(
+                        $iterator, $tplArgs,
+                        $ending_markups[$commands[0]],
+                        $skip);
+                }
+            }
+        } else {
+            $iterator->next();
+        }
+    }
+
+    return $for_preread;
+}
+
 /*
- * Note: skip sert à passer tous les calculs pour du texte qu'on n'incluera pas.
- * Ça sert si la condition d'un if est fausse, dans les else, et aussi quand un
- * block a déjà été écrit par un fils. On doit quand même parcourir le reste
- * à cause des balises embriquées, d'où le flag.
- *
- * TOUS les arguments passés en référence sont susceptibles d'être modifiés.
- * L'itérateur, bien sûr, ainsi que les renderedBlocks, mais aussi les arguments :
- * ils contiennent aussi les variables locales des boucles.
- */
-function renderLineArray(&$iterator, &$tplArgs, &$renderedBlocks, &$parent, $ending = NULL, $skip=false, &$for_preread=NULL) {
+* Note: skip sert à passer tous les calculs pour du texte qu'on n'incluera pas.
+* Ça sert si la condition d'un if est fausse, dans les else, et aussi quand un
+* block a déjà été écrit par un fils. On doit quand même parcourir le reste
+* à cause des balises embriquées, d'où le flag.
+*
+* TOUS les arguments passés en référence sont susceptibles d'être modifiés.
+* L'itérateur, bien sûr, ainsi que les renderedBlocks, mais aussi les arguments :
+* ils contiennent aussi les variables locales des boucles.
+*/
+function renderLineArray(&$iterator, &$tplArgs, &$renderedBlocks, &$parent, $ending = NULL, $skip=false) {
 
     $replVariables = function($m) use (&$tplArgs, &$replVariables) {
         $matches = array();
@@ -98,15 +147,10 @@ function renderLineArray(&$iterator, &$tplArgs, &$renderedBlocks, &$parent, $end
     $skip_monocommands = array("extends", "else");
     while ($iterator->valid()) {
         $line = $iterator->current();
-        if (is_array($for_preread)) {
-            if (!array_key_exists($iterator->key(), $for_preread)) {
-                $for_preread[$iterator->key()] = $line;
-            }
-        }
 
         $matches = array();
         if (preg_match('/^(.*?)\{%(.*?)%\}(.*)$/', $line, $matches)) {
-            if (!$skip && $for_preread == NULL)
+            if (!$skip)
                 $return_str .= preg_replace_callback('/\{\{(.*?)\}\}/', $replVariables, $matches[1]);
             $commands = explode(' ', trim($matches[2]), 2);
             //echo '<br />Detecting a new template control markup : '.$commands[0].'<br />';
@@ -119,20 +163,7 @@ function renderLineArray(&$iterator, &$tplArgs, &$renderedBlocks, &$parent, $end
                         return array($return_str, $e);
                     }
             }
-            if ($for_preread != NULL) {
-                if (array_search($commands[0], $skip_monocommands) === FALSE) {
-                    //echo "Command : ".$commands[0].' ; ending : ';
-                    //foreach($ending as $e)
-                        //echo $e.', ';
-                    //echo '<br />';
-
-                    $return_array = renderLineArray(
-                        $iterator, $tplArgs,
-                        $renderedBlocks, $parent,
-                        $ending_markups[$commands[0]],
-                        $skip, $for_preread);
-                }
-            } else if ($commands[0] == "block") {
+            if ($commands[0] == "block") {
                 $tmp_skip = $skip;
                 if (!$skip && isSet($renderedBlocks[$commands[1]])) {
                     $return_str .= $renderedBlocks[$commands[1]];
@@ -171,13 +202,7 @@ function renderLineArray(&$iterator, &$tplArgs, &$renderedBlocks, &$parent, $end
                 } else {
                     $for_args = parse_for($commands[1]);
                     // Make a first pass to save the lines.
-                    $save = array();
-                    renderLineArray(
-                        $iterator, $tplArgs,
-                        $renderedBlocks, $parent,
-                        $ending_markups[$commands[0]],
-                        $skip, $save
-                    );
+					$save = forPreRead($iterator, $tplArgs, array("endfor"), $skip);
                     if (count($for_args) == 2) {
                         $iterable = $usableReplVariables($for_args[0]);
                         foreach($iterable as $value) {
@@ -203,8 +228,8 @@ function renderLineArray(&$iterator, &$tplArgs, &$renderedBlocks, &$parent, $end
                     $commands[1], $filename_matches)) {
                     $parent = $filename_matches[1];
                 }
-                else
-                    throw "Ill-formed extension file name.";
+                //else 
+                    //throw "Ill-formed extension file name.";
             }
         } else {
             if (!$skip)
@@ -225,11 +250,11 @@ function renderLineArray(&$iterator, &$tplArgs, &$renderedBlocks, &$parent, $end
 }
 
 /**
- * Renders a template using the given parameters. The template syntax is similar
- * to Django's, with support for if's, 'for .. in ..' loops, blocks and template inheritance.
- * The ignoreInheritance parameter is a bonus to allow the rendering of only part of a page.
- * It might come handy with AJAX.
- */
+* Renders a template using the given parameters. The template syntax is similar
+* to Django's, with support for if's, 'for .. in ..' loops, blocks and template inheritance.
+* The ignoreInheritance parameter is a bonus to allow the rendering of only part of a page.
+* It might come handy with AJAX.
+*/
 function renderTemplate($fileName, &$tplArgs, $ignoreInheritance = False, &$renderedBlocks = NULL) {
 
     $iterator = new ArrayIterator(file(TEMPLATES_DIR.'/'.$fileName));
